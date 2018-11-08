@@ -1,4 +1,6 @@
-// Copyright 2018 Uber Technologies, Inc. All Rights Reserved.
+// Copyright (c) 2007–2018 The scikit-learn developers. All rights reserved.
+// Copyright 2018 Martin Krasser. All Rights Reserved.
+// Modifications copyright (C) 2018 Uber Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,7 +42,6 @@ bool isnan(const VectorXd& x) {
 
 GaussianProcessRegressor::GaussianProcessRegressor(double alpha) : alpha_(alpha) {}
 
-// Evaluate mean and variance at a point.
 void GaussianProcessRegressor::Fit(MatrixXd* x_train, MatrixXd* y_train) {
   x_train_ = x_train;
   y_train_ = y_train;
@@ -96,10 +97,6 @@ void GaussianProcessRegressor::Fit(MatrixXd* x_train, MatrixXd* y_train) {
     length_ = x_min[0];
     sigma_f_ = x_min[1];
   }
-
-//  std::cout << niter << " iterations" << std::endl;
-//  std::cout << "x = \n" << x.transpose() << std::endl;
-//  std::cout << "f(x) = " << fx << std::endl;
 }
 
 void GaussianProcessRegressor::Predict(const MatrixXd& x, VectorXd& mu, VectorXd* sigma) const {
@@ -133,6 +130,17 @@ void GaussianProcessRegressor::PosteriorPrediction(
   cov_s = k_ss - (k_s.transpose() * k_inv) * k_s;
 }
 
+void GaussianProcessRegressor::ApproxFPrime(const VectorXd& x, const std::function<double(const VectorXd&)>& f,
+                                            double f0, VectorXd& grad, double epsilon) {
+  VectorXd ei = VectorXd::Zero(x.size());
+  for (int k = 0; k < x.size(); k++) {
+    ei[k] = 1.0;
+    VectorXd d = epsilon * ei;
+    grad[k] = (f(x + d) - f0) / d[k];
+    ei[k] = 0.0;
+  }
+}
+
 MatrixXd GaussianProcessRegressor::Kernel(const MatrixXd& x1, const MatrixXd& x2,
                                           double l, double sigma_f) const {
   auto x1_vec = x1.cwiseProduct(x1).rowwise().sum();
@@ -149,17 +157,6 @@ MatrixXd GaussianProcessRegressor::Kernel(const MatrixXd& x1, const MatrixXd& x2
   };
 
   return sqdist.unaryExpr(op);
-}
-
-void GaussianProcessRegressor::ApproxFPrime(const VectorXd& x, const std::function<double(const VectorXd&)>& f,
-                                            double f0, VectorXd& grad, double epsilon) {
-  VectorXd ei = VectorXd::Zero(x.size());
-  for (int k = 0; k < x.size(); k++) {
-    ei[k] = 1.0;
-    VectorXd d = epsilon * ei;
-    grad[k] = (f(x + d) - f0) / d[k];
-    ei[k] = 0.0;
-  }
 }
 
 } // namespace common

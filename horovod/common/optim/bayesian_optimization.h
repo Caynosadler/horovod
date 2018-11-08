@@ -1,4 +1,5 @@
-// Copyright 2018 Uber Technologies, Inc. All Rights Reserved.
+// Copyright 2018 Martin Krasser. All Rights Reserved.
+// Modifications copyright (C) 2018 Uber Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,18 +26,37 @@
 namespace horovod {
 namespace common {
 
+// This implementation is based on the blog by Martin Krasser on Bayesian Optimization and is
+// an adaptation of the Python + NumPy code to C++.
+//
+// See: http://krasserm.github.io/2018/03/21/bayesian-optimization
 class BayesianOptimization {
 public:
+  // Performs binary optimization over the observed data by predicting the next sample to evaluate.
+  //
+  // Args:
+  //  bounds: Vector of (min, max) range values for each parameter (d x 1).
+  //  alpha: Gaussian process noise parameter (see GaussianProcessRegressor).
+  //  xi: Exploitation-exploration trade-off parameter, increase to explore more of the space.
   BayesianOptimization(std::vector<std::pair<double, double>> bounds, double alpha, double xi=0.01);
 
+  // Returns the dimensionality of the parameter vector (number of parameters).
   inline unsigned long Dim() const { return d_; };
 
+  // Adds an observed sample and its objective value.
+  //
+  // Args:
+  //  x: Sample point tested (d x 1).
+  //  y: Evaluated objective value at x.
   void AddSample(const Eigen::VectorXd& x, double y);
 
   void AddSample(const Eigen::VectorXd& x, const Eigen::VectorXd& y);
 
+  // Provides the next sample point to evaluate subject to maximizing the
+  // expected improvement of the target acquisition function.
   Eigen::VectorXd NextSample();
 
+  // Reset the state of the optimizer by clearing all samples.
   void Clear();
 
 private:
@@ -67,7 +87,7 @@ private:
 
   unsigned long d_;
   std::vector<std::pair<double, double>> bounds_;
-  double xi_;  //  Exploitation-exploration trade-off parameter.
+  double xi_;
 
   std::random_device rd_;  // Will be used to obtain a seed for the random number engine
   std::mt19937 gen_ = std::mt19937(rd_()); // Standard mersenne_twister_engine seeded with rd()

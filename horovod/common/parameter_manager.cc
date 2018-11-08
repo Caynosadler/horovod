@@ -25,43 +25,13 @@ namespace horovod {
 namespace common {
 
 #define WARMUPS 3
-
-#define INVPHI 0.61803398875
-#define INVPHI2 0.38196601125
-#define TOL 10.0
-
-std::vector<double> CycleTimes() {
-  std::vector<double> results;
-  for (int i = 0; i < 60; i++) {
-    results.push_back(i * 5);
-  }
-  std::random_shuffle(results.begin(), results.end());
-  return results;
-}
+#define CYCLES_PER_SAMPLE 5
 
 Eigen::VectorXd CreateVector(double x1, double x2) {
   Eigen::VectorXd v(2);
   v(0) = x1;
   v(1) = x2;
   return v;
-}
-
-double Mean(double* scores, int n) {
-  double sum = 0.0;
-  for (int i = 0; i < n; i++) {
-    sum += scores[i];
-  }
-  return sum / n;
-}
-
-double Stddev(double* scores, int n) {
-  double mean = Mean(scores, n);
-  double num = 0.0;
-  for (int i = 0; i < n; i++) {
-    num += (scores[i] - mean) * (scores[i] - mean);
-  }
-  num /= n;
-  return std::sqrt(num);
 }
 
 // ParameterManager
@@ -77,17 +47,10 @@ ParameterManager::ParameterManager() :
         CreateVector(16, 25),
         CreateVector(8, 10)
       }, *this, &hierarchical_allreduce_)),
-//    tensor_fusion_threshold_mb_(CategoricalParameter<int64_t>(
-//        std::vector<int64_t>{0, 1, 2, 4, 8, 16, 32, 64}, *this, nullptr)),
-//    tensor_fusion_threshold_mb_(NumericParameter<int64_t>(
-//        1024 * 1024, 256 * 1024 * 1024, *this, nullptr)),
-//    cycle_time_ms_(CategoricalParameter<double>(
-//        CycleTimes(), *this, &tensor_fusion_threshold_mb_)),
-//    cycle_time_ms_(NumericParameter<double>(1.0, 200.0, *this, &tensor_fusion_threshold_mb_)),
     leaf_param_(&joint_params_),
     active_(false),
     warmup_remaining_(WARMUPS),
-    cycle_(0),
+    sample_(0),
     rank_(-1),
     root_rank_(0),
     writing_(false) {
@@ -134,7 +97,8 @@ void ParameterManager::SetAutoTuning(bool active) {
   }
   active_ = active;
   if (!active_ && rank_ == root_rank_) {
-    std::cerr << "BEST [" << hierarchical_allreduce_.BestValue() << ", "
+    std::cerr << "Horovod Tune: BEST [ "
+              << hierarchical_allreduce_.BestValue() << ", "
               << joint_params_.BestValue(cycle_time_ms) << " ms , "
               << joint_params_.BestValue(fusion_buffer_threshold_mb) << " mb ] "
               << hierarchical_allreduce_.BestScore()
@@ -169,64 +133,49 @@ void ParameterManager::SetCycleTimeMs(double value, bool fixed) {
   joint_params_.SetValue(cycle_time_ms, value, fixed);
 }
 
-void ParameterManager::Update(const std::vector<std::string>& tensor_names, int64_t bytes, double seconds) {
+void ParameterManager::Update(const std::vector<std::string>& tensor_names, int64_t bytes, double microseconds) {
   if (!active_) {
     return;
   }
 
   for (const std::string& tensor_name : tensor_names) {
     int32_t cycle = tensor_counts_[tensor_name]++;
-    if (cycle > cycle_ * 5) {
-//      std::cerr << total_bytes_ << " bytes " << total_seconds_ << " seconds" << std::endl;
-      scores_[cycle_] = total_bytes_ / total_seconds_;
+    if (cycle > sample_ * CYCLES_PER_SAMPLE) {
+      scores_[sample_] = total_bytes_ / total_microseconds_;
       total_bytes_ = 0;
-      total_seconds_ = 0;
-      cycle_++;
+      total_microseconds_ = 0;
+      sample_++;
       break;
     }
   }
 
   total_bytes_ += bytes;
-  total_seconds_ += seconds;
+  total_microseconds_ += microseconds;
 
-  if (cycle_ >= CYCLES) {
-    if (rank_ == root_rank_) {
-      std::cerr << "score: ";
-      for (int i = 0; i < CYCLES; i++) {
-        std::cerr << scores_[i] << ",";
-      }
-      std::cerr << std::endl;
-    }
-    std::sort(scores_, scores_ + CYCLES);
-    double med_score = scores_[CYCLES / 2];
-    Tune(med_score, Mean(scores_, CYCLES), Stddev(scores_, CYCLES));
+  if (sample_ >= SAMPLES) {
+    std::sort(scores_, scores_ + SAMPLES);
+    double med_score = scores_[SAMPLES / 2];
+    Tune(med_score);
   }
 }
 
-void ParameterManager::Tune(double score, double mean, double stddev) {
+void ParameterManager::Tune(double score) {
   if (warmup_remaining_ > 0) {
     warmup_remaining_--;
-    std::cerr << "WARMUP DONE | hierarchical tunable="
-              << hierarchical_allreduce_.IsTunable() << " value=" << HierarchicalAllreduce() << std::endl;
-  } else {
-//    std::cerr << "(" << rank_ << ") " << total_bytes_ << ", " << total_seconds_ << " "
-//              << "[" << joint_params_.Value()[1] << " ms , " << joint_params_.Value()[0] << " mb ] " << score << "  "
-//              << "[" << joint_params_.BestValue()[1] << " ms , " << joint_params_.BestValue()[0] << " mb] "
-//              << leaf_param_->BestScore()
-//              << std::endl;
-
     if (rank_ == root_rank_) {
-      std::cerr << "[" << hierarchical_allreduce_.Value() << ", "
+      std::cerr << "Horovod Tune: WARMUP DONE (" << warmup_remaining_ << " remaining)" << std::endl;
+    }
+  } else {
+    if (rank_ == root_rank_) {
+      std::cerr << "Horovod Tune: [" << hierarchical_allreduce_.Value() << ", "
                 << joint_params_.Value(cycle_time_ms) << " ms , " << joint_params_.Value(fusion_buffer_threshold_mb) << " mb ] "
-                << score << " (" << mean << " +- " << (1.96 * stddev) << ")"
+                << score
                 << std::endl;
       if (writing_ && file_.good()) {
         file_ << hierarchical_allreduce_.Value() << ","
               << joint_params_.Value(cycle_time_ms) << ","
               << joint_params_.Value(fusion_buffer_threshold_mb) << ","
-              << score << ","
-              << mean << ","
-              << stddev
+              << score
               << std::endl;
       }
 
@@ -240,9 +189,9 @@ void ParameterManager::Tune(double score, double mean, double stddev) {
 
 void ParameterManager::ReadyTune() {
   total_bytes_ = 0;
-  total_seconds_ = 0;
+  total_microseconds_ = 0;
   tensor_counts_.clear();
-  cycle_ = 0;
+  sample_ = 0;
 }
 
 void ParameterManager::SyncParams() {
@@ -267,14 +216,6 @@ void ParameterManager::SyncParams() {
     joint_params_.SetValue(fusion_buffer_threshold_mb, params.tensor_fusion_threshold, true);
     joint_params_.SetValue(cycle_time_ms, params.cycle_time, true);
     active_ = params.active;
-
-    if (!active_) {
-      std::cerr << rank_ << ": BEST [" << hierarchical_allreduce_.BestValue() << ", "
-                << joint_params_.BestValue(cycle_time_ms) << " ms , "
-                << joint_params_.BestValue(fusion_buffer_threshold_mb) << " mb ] "
-                << hierarchical_allreduce_.BestScore()
-                << std::endl;
-    }
   }
 }
 
@@ -350,71 +291,6 @@ void ParameterManager::TunableParameter<T>::CompleteTuning() {
   ResetState();
 }
 
-// NumericParameter
-template <class T>
-ParameterManager::NumericParameter<T>::NumericParameter(
-    T low, T high,
-    ParameterManager& parent,
-    ParameterManager::ITunableParameter* const next_param) :
-    TunableParameter<T>(low, parent, next_param),
-    low_init_(low),
-    high_init_(high),
-    low_(low),
-    high_(high) {
-  ResetState();
-}
-
-template <class T>
-void ParameterManager::NumericParameter<T>::OnTune(double score, T& value) {
-  if (std::isnan(left_.score)) {
-    left_.score = score;
-    value = right_.value;
-  } else if (std::isnan(right_.score)) {
-    right_.score = score;
-  }
-
-  if (!std::isnan(left_.score) && !std::isnan(right_.score)) {
-    if (left_.score > right_.score) {
-      high_ = right_.value;
-      right_.value = left_.value;
-      right_.score = left_.score;
-      h_ = INVPHI * h_;
-      value = low_ + INVPHI2 * h_;
-      left_.value = value;
-      left_.score = std::numeric_limits<double>::quiet_NaN();
-      std::cerr << std::endl << "LEFT: " << value << " " << low_ << " " << left_.value << " " << right_.value << " " << high_ << std::endl << std::endl;
-    } else {
-      low_ = left_.value;
-      left_.value = right_.value;
-      left_.score = right_.score;
-      h_ = INVPHI * h_;
-      value = low_ + INVPHI * h_;
-      right_.value = value;
-      right_.score = std::numeric_limits<double>::quiet_NaN();
-      std::cerr << std::endl << "LEFT: " << value << " " << low_ << " " << left_.value << " " << right_.value << " " << high_ << std::endl << std::endl;
-    }
-
-    k_++;
-  }
-}
-
-template <class T>
-bool ParameterManager::NumericParameter<T>::IsDoneTuning() const {
-  return k_ >= n_ - 1;
-}
-
-template <class T>
-void ParameterManager::NumericParameter<T>::ResetState() {
-  low_ = low_init_;
-  high_ = high_init_;
-  h_ = high_ - low_;
-  n_ = int32_t(ceil(log(TOL / h_) / log(INVPHI)));
-  left_ = {low_ + INVPHI2 * h_, std::numeric_limits<double>::quiet_NaN()};
-  right_ = {low_ + INVPHI * h_, std::numeric_limits<double>::quiet_NaN()};
-  k_ = 0;
-  this->SetCurrentValue(left_.value);
-}
-
 // CategoricalParameter
 template <class T>
 ParameterManager::CategoricalParameter<T>::CategoricalParameter(
@@ -445,16 +321,6 @@ void ParameterManager::CategoricalParameter<T>::ResetState() {
 }
 
 // BayesianParameter
-Eigen::VectorXd GetTestPoint(std::vector<std::pair<double, double>> bounds, double s) {
-  Eigen::VectorXd v = Eigen::VectorXd::Zero(bounds.size());
-  for (int i = 0; i < v.size(); i++) {
-    double min = bounds[i].first;
-    double max = bounds[i].second;
-    v[i] = min + (max - min) * s;
-  }
-  return v;
-}
-
 ParameterManager::BayesianParameter::BayesianParameter(
     std::vector<BayesianVariableConfig> variables,
     std::vector<Eigen::VectorXd> test_points,

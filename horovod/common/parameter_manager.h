@@ -44,12 +44,19 @@ class ParameterManager {
 public:
   ParameterManager();
 
+  // Creates MPI data types used for sending and receiving optimization state across workers.
   void CreateMpiTypes();
+
+  // Frees MPI data types during Horovod MPI shutdown.
   void FreeMpiTypes();
 
+  // Initializes this manager if auto tuning was requested.
   void Initialize(int32_t rank, int32_t root_rank, MPI_Comm mpi_comm, std::string file_name);
+
+  // Starts or stop the auto tuning procedure.
   void SetAutoTuning(bool active);
 
+  // Returns true if parameters are being actively tuned currently.
   inline bool IsAutoTuning() const {
     return active_;
   }
@@ -68,19 +75,20 @@ public:
   double CycleTimeMs() const;
   void SetCycleTimeMs(double cycle_time_ms, bool fixed=false);
 
-  void Update(const std::vector<std::string>& tensor_names, int64_t bytes, double seconds);
+  // Observes that the given tensors have been allreduced over the given number of microseconds.
+  //
+  // Args:
+  //  tensor_names: The names of the tensors that have been allreduced.
+  //  bytes: The number of bytes that were allreduced per worker.
+  //  microseconds: The number of microseconds taken to allreduce the bytes on this worker.
+  void Update(const std::vector<std::string>& tensor_names, int64_t bytes, double microseconds);
 
 private:
-  void Tune(double score, double mean, double stddev);
+  void Tune(double score);
   void ReadyTune();
   void SyncParams();
 
-  template <class T>
-  struct ParameterScore {
-    T value;
-    double score;
-  };
-
+  // Interface used to represent a parameter (or group of parameters) being tuned.
   class ITunableParameter {
   public:
     virtual void Tune(double score) = 0;
@@ -89,6 +97,7 @@ private:
     virtual bool IsTunable() const = 0;
   };
 
+  // Abstract base class used to implement hierarchical parameter tuning.
   template <class T>
   class TunableParameter : public ITunableParameter {
   public:
@@ -126,29 +135,7 @@ private:
     ITunableParameter* const next_param_;
   };
 
-  template <class T>
-  class NumericParameter : public TunableParameter<T> {
-  public:
-    NumericParameter(T low, T high, ParameterManager& parent, ITunableParameter* const next_param);
-
-  private:
-    void OnTune(double score, T& value) override;
-    bool IsDoneTuning() const override;
-    void ResetState() override;
-
-    T low_init_;
-    T high_init_;
-
-    T low_;
-    T high_;
-    ParameterScore<T> left_;
-    ParameterScore<T> right_;
-
-    double h_;
-    int32_t n_;
-    int32_t k_;
-  };
-
+  // A parameter that optimizes over a finite set of discrete values to be tried sequentially.
   template <class T>
   class CategoricalParameter : public TunableParameter<T> {
   public:
@@ -170,6 +157,7 @@ private:
     std::pair<double, double> bounds;
   };
 
+  // A set of numerical parameters optimized jointly using Bayesian Optimization.
   class BayesianParameter : public TunableParameter<Eigen::VectorXd> {
   public:
     BayesianParameter(std::vector<BayesianVariableConfig> variables, std::vector<Eigen::VectorXd> test_points,
@@ -205,22 +193,16 @@ private:
   CategoricalParameter<bool> hierarchical_allreduce_;
   BayesianParameter joint_params_;
 
-//  NumericParameter<int64_t> tensor_fusion_threshold_mb_;
-//  CategoricalParameter<int64_t> tensor_fusion_threshold_mb_;
-
-//  NumericParameter<double> cycle_time_ms_;
-//  CategoricalParameter<double> cycle_time_ms_;
-
   ITunableParameter* const leaf_param_;
   bool active_;
   int32_t warmup_remaining_;
 
-  static constexpr int CYCLES = 5;
-  double scores_[CYCLES];
-  int32_t cycle_;
+  static constexpr int SAMPLES = 5;
+  double scores_[SAMPLES];
+  int32_t sample_;
 
   int64_t total_bytes_;
-  double total_seconds_;
+  double total_microseconds_;
   std::unordered_map<std::string, int32_t> tensor_counts_;
 
   int32_t rank_;

@@ -1,4 +1,5 @@
-// Copyright 2018 Uber Technologies, Inc. All Rights Reserved.
+// Copyright 2018 Martin Krasser. All Rights Reserved.
+// Modifications copyright (C) 2018 Uber Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -115,9 +116,6 @@ VectorXd BayesianOptimization::ProposeLocation(const MatrixXd& x_sample, const M
     }
   }
 
-//  std::cout << "x_next = " << x_next.transpose() << std::endl;
-//  std::cout << "f(x) = " << fx_max << std::endl;
-
   return x_next;
 }
 
@@ -129,8 +127,10 @@ VectorXd BayesianOptimization::ExpectedImprovement(const MatrixXd& x, const Matr
   Eigen::VectorXd mu_sample;
   gpr_.Predict(x_sample, mu_sample);
 
-  // Needed for noise-based model, otherwise use np.max(Y_sample).
-  // See also section 2.4 in [...]
+  // Needed for noise-based model, otherwise use y_sample.maxCoeff.
+  // See also section 2.4 in https://arxiv.org/pdf/1012.2599.pdf:
+  // Eric Brochu, Vlad M. Cora, Nando de Freitas,
+  // A Tutorial on Bayesian Optimization of Expensive Cost Functions
   double mu_sample_opt = mu_sample.maxCoeff();
 
   auto pdf = [](double x) {
